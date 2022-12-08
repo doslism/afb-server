@@ -1,5 +1,6 @@
 import { IncomingMessage } from "http";
 import { WebSocket, WebSocketServer } from "ws";
+import LRU from "lru-cache";
 
 type PlayerRole = "BLACK" | "WHITE" | "NONE";
 type ChessStatus = "POSITIVE" | "NEGATIVE" | "NONE";
@@ -37,6 +38,12 @@ const checkerboardData: GameData = {
   },
 };
 
+const lru = new LRU({
+  max: 500,
+  maxSize: 5000,
+  ttl: 1000 * 60 * 5,
+});
+
 const useWebSocket: (wss: WebSocketServer) => void = (wss: WebSocketServer) => {
   const checkerData = new Map<string, GameData>();
   wss.addListener("connection", (ws: WebSocket, req: IncomingMessage) => {
@@ -47,11 +54,14 @@ const useWebSocket: (wss: WebSocketServer) => void = (wss: WebSocketServer) => {
 
         if (action === "initialize") {
           const id = payload.id;
-          checkerData.set(id, checkerboardData);
+          if (!checkerData.get(id)) {
+            checkerData.set(id, checkerboardData);
+          }
+
           ws.send(
             JSON.stringify({
               action: "initialized",
-              payload: checkerboardData,
+              payload: checkerData.get(id),
             })
           );
         }
@@ -61,21 +71,25 @@ const useWebSocket: (wss: WebSocketServer) => void = (wss: WebSocketServer) => {
           chess.status = "POSITIVE";
           const myCheckerData = checkerData.get(id);
           if (chess.belong === "playerOne") {
-            console.log(myCheckerData?.playerOne);
             myCheckerData?.playerOne.chessPieces.push(chess);
           } else {
-            console.log(myCheckerData?.playerTwo);
             myCheckerData?.playerTwo.chessPieces.push(chess);
           }
           ws.send(
-            JSON.stringify({
-              action: "chess",
-              payload: myCheckerData,
-            })
+            JSON.stringify(
+              {
+                action: "chess",
+                payload: myCheckerData,
+              },
+              () => {
+                lru.set("checkerCache", myCheckerData);
+              }
+            )
           );
         }
       }
 
+      // boradcast
       wss.clients.forEach(function each(client) {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(data, { binary: isBinary });
